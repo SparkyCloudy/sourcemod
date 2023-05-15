@@ -3,16 +3,20 @@ on:
   push:
     branches:
      - master
-     - '[0-9]+.[0-9]+-dev'
+     - '[0-9]+.[0-9]+-dev*'
+    tags:
+     - '*'
   pull_request:
     branches:
      - master
-     - '[0-9]+.[0-9]+-dev'
+     - '[0-9]+.[0-9]+-dev*'
+    tags:
+     - '*'
 jobs:
-  test:
+  build:
     strategy:
       matrix:
-        os: [ubuntu-18.04, ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
         include:
           - os: windows-latest
             os_short: win
@@ -21,10 +25,6 @@ jobs:
             os_short: linux
             compiler_cc: clang
             compiler_cxx: clang++
-          - os: ubuntu-18.04
-            os_short: linux
-            compiler_cc: clang-8
-            compiler_cxx: clang++-8
       fail-fast: false
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os_short }}-${{ matrix.compiler_cc }}
@@ -96,3 +96,70 @@ jobs:
           cd build
           python ../configure.py --enable-optimize --sdks=${{ join(fromJSON(env.SDKS)) }} --targets=${{ env.ARCH }} --mms-path=${{ env.DEPENDENCIES_ROOT }}/mmsource-${{ env.MMSOURCE_VERSION }} --hl2sdk-root=${{ env.DEPENDENCIES_ROOT }} --mysql-path=${{ env.DEPENDENCIES_ROOT }}/mysql-${{ env.MYSQL_VERSION }} --mysql64-path=${{ env.DEPENDENCIES_ROOT }}/mysql-${{ env.MYSQL_VERSION }}-x86_64
           ambuild
+
+      - name: Add GeoIP2 - Linux
+        working-directory: sourcemod/build
+        if: startsWith(runner.os, 'Linux') || startsWith(runner.os, 'macOS')
+        run: |
+          mkdir -p package/addons/sourcemod/configs/geoip
+          cd package/addons/sourcemod/configs/geoip
+          curl -L https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb -o GeoLite2-City.mmdb
+
+      - name: Add GeoIP2 - Windows
+        working-directory: sourcemod/build
+        if: startsWith(runner.os, 'Windows')
+        run: |
+          cd package/addons/sourcemod/configs/geoip
+          curl -L https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb -o GeoLite2-City.mmdb
+
+      - name: Upload build archive for test runners
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ runner.os }}
+          path: sourcemod/build/package
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Versioning
+        run: |
+          version="latest"
+          if [[ "${{ github.ref_type }}" == 'tag' ]]; then
+            version=`echo $GITHUB_REF | sed "s/refs\/tags\///"`;
+          fi
+          echo "RELEASE_VERSION=$version" >> $GITHUB_ENV
+
+      - name: Package
+        run: |
+          ls -Rall
+          if [ -d "./Linux/" ]; then
+            cd ./Linux/
+            tar -czf ../${{ github.event.repository.name }}-${{ env.RELEASE_VERSION }}-linux.tar.gz -T <(\ls -1)
+            cd -
+          fi
+          if [ -d "./macOS/" ]; then
+            cd ./macOS/
+            tar -czf ../${{ github.event.repository.name }}-${{ env.RELEASE_VERSION }}-mac.tar.gz -T <(\ls -1)
+            cd -
+          fi
+          if [ -d "./Windows/" ]; then
+            cd ./Windows/
+            tar -czf ../${{ github.event.repository.name }}-${{ env.RELEASE_VERSION }}-windows.tar.gz -T <(\ls -1)
+            cd -
+          fi
+
+      - name: Release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: '*.tar.gz'
+          tag: ${{ env.RELEASE_VERSION }}
+          file_glob: true
+          overwrite: true
